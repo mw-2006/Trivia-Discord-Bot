@@ -2,6 +2,7 @@ export interface TriviaQuestion {
   question: string;
   options: string[];
   answer: string;
+  hint?: string;
 }
 
 export const triviaQuestions: TriviaQuestion[] = [

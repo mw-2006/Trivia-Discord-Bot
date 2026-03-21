@@ -13,6 +13,7 @@ import {
   type TextBasedChannel,
 } from "discord.js";
 import cron from "node-cron";
+import OpenAI from "openai";
 import { triviaQuestions } from "./questions.js";
 import { loadCustomQuestions, saveCustomQuestion } from "./storage.js";
 import { incrementScore, getTopScores } from "./scores.js";
@@ -21,11 +22,16 @@ const DISCORD_TOKEN = process.env["DISCORD_TOKEN"];
 const CHANNEL_ID = process.env["DISCORD_CHANNEL_ID"];
 const ROLE_ID = process.env["DISCORD_ROLE_ID"];
 const CRON_SCHEDULE = process.env["CRON_SCHEDULE"] ?? "0 9 * * *";
+const OPENAI_BASE_URL = process.env["AI_INTEGRATIONS_OPENAI_BASE_URL"];
+const OPENAI_API_KEY = process.env["AI_INTEGRATIONS_OPENAI_API_KEY"];
 
 if (!DISCORD_TOKEN) throw new Error("Missing DISCORD_TOKEN secret.");
 if (!CHANNEL_ID) throw new Error("Missing DISCORD_CHANNEL_ID secret.");
 if (!ROLE_ID) throw new Error("Missing DISCORD_ROLE_ID secret.");
+if (!OPENAI_BASE_URL) throw new Error("Missing AI_INTEGRATIONS_OPENAI_BASE_URL.");
+if (!OPENAI_API_KEY) throw new Error("Missing AI_INTEGRATIONS_OPENAI_API_KEY.");
 
+const openai = new OpenAI({ baseURL: OPENAI_BASE_URL, apiKey: OPENAI_API_KEY });
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
 const OPTION_LABELS = ["🇦", "🇧", "🇨", "🇩"];
@@ -33,19 +39,43 @@ const OPTION_KEYS = ["a", "b", "c", "d"];
 
 // In-memory map of messageId -> active question state
 interface ActiveQuestion {
+  question: string;
   answer: string;
   options: string[];
   answered: Set<string>;
+  hint: string | null; // null = not yet generated, string = cached
+  hintRequested: boolean;
 }
 const activeQuestions = new Map<string, ActiveQuestion>();
+
+// --- Helpers ---
 
 function pickRandomQuestion() {
   const all = [...triviaQuestions, ...loadCustomQuestions()];
   return all[Math.floor(Math.random() * all.length)]!;
 }
 
+async function generateHint(question: string, answer: string): Promise<string> {
+  const response = await openai.chat.completions.create({
+    model: "gpt-5.2",
+    max_completion_tokens: 100,
+    messages: [
+      {
+        role: "system",
+        content:
+          "You write short, helpful hints for trivia questions about the Ice Planet Hockey book series (Heated Rivalry / Common Goal by Rachel Reid). The hint should nudge the player in the right direction without revealing the answer directly. Keep it to 1–2 sentences.",
+      },
+      {
+        role: "user",
+        content: `Question: "${question}"\nCorrect answer: "${answer}"\n\nWrite a hint.`,
+      },
+    ],
+  });
+  return response.choices[0]?.message?.content?.trim() ?? "Think carefully about the characters and where key scenes take place!";
+}
+
 function buildTriviaComponents(options: string[]) {
-  const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+  const answerRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
     options.map((opt, i) =>
       new ButtonBuilder()
         .setCustomId(`trivia_${OPTION_KEYS[i]}`)
@@ -53,7 +83,15 @@ function buildTriviaComponents(options: string[]) {
         .setStyle(ButtonStyle.Primary)
     )
   );
-  return [row];
+
+  const hintRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId("trivia_hint")
+      .setLabel("💡 Get a Hint")
+      .setStyle(ButtonStyle.Secondary)
+  );
+
+  return [answerRow, hintRow];
 }
 
 function buildTriviaContent(roleId: string, question: string): string {
@@ -64,13 +102,13 @@ function buildTriviaContent(roleId: string, question: string): string {
     "",
     `**${question}**`,
     "",
-    "_Click a button below to answer. Only your first answer counts!_",
+    "_Click a button to answer. Only your first answer counts! Use 💡 for a hint._",
   ].join("\n");
 }
 
 async function postDailyTrivia(): Promise<void> {
   console.log("[trivia] Picking question...");
-  const { question, options, answer } = pickRandomQuestion();
+  const { question, options, answer, hint } = pickRandomQuestion();
 
   const channel = await client.channels.fetch(CHANNEL_ID!);
   if (!channel || !channel.isTextBased()) {
@@ -83,27 +121,40 @@ async function postDailyTrivia(): Promise<void> {
     components: buildTriviaComponents(options),
   });
 
-  activeQuestions.set(msg.id, { answer, options, answered: new Set() });
+  activeQuestions.set(msg.id, {
+    question,
+    answer,
+    options,
+    answered: new Set(),
+    hint: hint ?? null,
+    hintRequested: false,
+  });
+
   console.log(`[trivia] Question posted (message ${msg.id}).`);
 }
 
-// --- Button handler ---
+// --- Button handlers ---
 
-async function handleTriviaButton(interaction: ButtonInteraction): Promise<void> {
-  const state = activeQuestions.get(interaction.message.id);
-  if (!state) {
-    await interaction.reply({
-      content: "⚠️ This question is no longer active.",
-      ephemeral: true,
-    });
-    return;
+async function handleHintButton(interaction: ButtonInteraction, state: ActiveQuestion): Promise<void> {
+  // If no hint yet, generate and cache it
+  if (state.hint === null) {
+    await interaction.deferReply({ ephemeral: true });
+    state.hintRequested = true;
+    try {
+      state.hint = await generateHint(state.question, state.answer);
+    } catch (err) {
+      console.error("[hint] Failed to generate hint:", err);
+      state.hint = "Think carefully about the characters and where key scenes take place!";
+    }
+    await interaction.editReply(`💡 **Hint:** ${state.hint}`);
+  } else {
+    await interaction.reply({ content: `💡 **Hint:** ${state.hint}`, ephemeral: true });
   }
+}
 
+async function handleAnswerButton(interaction: ButtonInteraction, state: ActiveQuestion): Promise<void> {
   if (state.answered.has(interaction.user.id)) {
-    await interaction.reply({
-      content: "You've already answered this question!",
-      ephemeral: true,
-    });
+    await interaction.reply({ content: "You've already answered this question!", ephemeral: true });
     return;
   }
 
@@ -131,6 +182,20 @@ async function handleTriviaButton(interaction: ButtonInteraction): Promise<void>
   }
 }
 
+async function handleTriviaButton(interaction: ButtonInteraction): Promise<void> {
+  const state = activeQuestions.get(interaction.message.id);
+  if (!state) {
+    await interaction.reply({ content: "⚠️ This question is no longer active.", ephemeral: true });
+    return;
+  }
+
+  if (interaction.customId === "trivia_hint") {
+    await handleHintButton(interaction, state);
+  } else {
+    await handleAnswerButton(interaction, state);
+  }
+}
+
 // --- Slash commands ---
 
 const addTriviaCommand = new SlashCommandBuilder()
@@ -155,6 +220,12 @@ const addTriviaCommand = new SlashCommandBuilder()
         { name: "C", value: "c" },
         { name: "D", value: "d" }
       )
+  )
+  .addStringOption((o) =>
+    o
+      .setName("hint")
+      .setDescription("Optional hint shown when users click 💡 (leave blank to auto-generate)")
+      .setRequired(false)
   );
 
 const leaderboardCommand = new SlashCommandBuilder()
@@ -173,13 +244,14 @@ async function handleAddTrivia(interaction: ChatInputCommandInteraction): Promis
   const optC = interaction.options.getString("c", true);
   const optD = interaction.options.getString("d", true);
   const answerKey = interaction.options.getString("answer", true);
+  const hint = interaction.options.getString("hint", false) ?? undefined;
 
   const options = [optA, optB, optC, optD];
   const answerMap: Record<string, string> = { a: optA, b: optB, c: optC, d: optD };
   const answer = answerMap[answerKey]!;
   const label = `${["A", "B", "C", "D"][OPTION_KEYS.indexOf(answerKey)]}: ${answer}`;
 
-  const total = saveCustomQuestion({ question, options, answer });
+  const total = saveCustomQuestion({ question, options, answer, hint });
 
   await interaction.reply({
     content: [
@@ -188,6 +260,7 @@ async function handleAddTrivia(interaction: ChatInputCommandInteraction): Promis
       `**${question}**`,
       options.map((opt, i) => `${OPTION_LABELS[i]} ${opt}`).join("\n"),
       `Correct answer: **${label}**`,
+      hint ? `💡 Hint: ${hint}` : "💡 Hint: will be auto-generated by AI when requested",
       "",
       `📦 Total custom questions in pool: **${total}**`,
     ].join("\n"),
@@ -203,7 +276,6 @@ async function handleLeaderboard(interaction: ChatInputCommandInteraction): Prom
   if (top.length === 0) {
     await interaction.reply({
       content: "📊 No scores yet — answer today's trivia question to get on the board!",
-      ephemeral: false,
     });
     return;
   }
@@ -214,10 +286,7 @@ async function handleLeaderboard(interaction: ChatInputCommandInteraction): Prom
     return `${medal} <@${userId}> — **${score}** correct ${score === 1 ? "answer" : "answers"}`;
   });
 
-  await interaction.reply({
-    content: ["🏆 **Trivia Leaderboard**", "", ...rows].join("\n"),
-    ephemeral: false,
-  });
+  await interaction.reply({ content: ["🏆 **Trivia Leaderboard**", "", ...rows].join("\n") });
 }
 
 async function handlePostTrivia(interaction: ChatInputCommandInteraction): Promise<void> {
