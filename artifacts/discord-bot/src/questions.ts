@@ -169,6 +169,108 @@ export const triviaQuestions: TriviaQuestion[] = [
     options: ["Locker Room bench", "Scott's apartment desk", "Smoothie shop napkin", "Arena locker"],
     answer: "Smoothie shop napkin",
   },
+
+  // OpenAI-generated — scene-accurate expansions
+  {
+    question: "In Heated Rivalry, where do Shane and Ilya first hook up after meeting at an All-Star event?",
+    options: ["A hotel room", "Ilya's apartment", "A team bus", "A locker room"],
+    answer: "A hotel room",
+  },
+  {
+    question: "What is Shane Hollander's on-ice position?",
+    options: ["Center", "Defenseman", "Goalie", "Left wing"],
+    answer: "Center",
+  },
+  {
+    question: "What is Ilya Rozanov's on-ice position?",
+    options: ["Right wing", "Defenseman", "Goalie", "Center"],
+    answer: "Right wing",
+  },
+  {
+    question: "Which NHL teams are Shane and Ilya primarily associated with in Heated Rivalry?",
+    options: ["Montreal Centaurs and Boston Bears", "Toronto Storm and New York Pirates", "Vancouver Orcas and Calgary Flames", "Chicago Hawks and Detroit Wheels"],
+    answer: "Montreal Centaurs and Boston Bears",
+  },
+  {
+    question: "What is the nickname often used for the Shane-and-Ilya rivalry by media and fans in-universe?",
+    options: ["The Battle of the Beasts", "Heated Rivalry", "The Original Six Feud", "The Hat Trick War"],
+    answer: "Heated Rivalry",
+  },
+  {
+    question: "In Heated Rivalry, what kind of event is the recurring backdrop for several Shane/Ilya encounters over the years?",
+    options: ["All-Star Weekend", "Training camp", "The NHL draft", "The Winter Classic"],
+    answer: "All-Star Weekend",
+  },
+  {
+    question: "In Common Goal, what is Scott Hunter's role on the team?",
+    options: ["Team captain", "Rookie call-up", "Assistant coach", "Backup goalie"],
+    answer: "Team captain",
+  },
+  {
+    question: "In Common Goal, what is Kip Doyle's profession when the story begins?",
+    options: ["Event planner", "Social worker", "Physical therapist", "Sports reporter"],
+    answer: "Social worker",
+  },
+  {
+    question: "In Common Goal, what does Kip primarily work with in his social work job?",
+    options: ["At-risk youth", "Retired athletes", "Immigrants seeking asylum", "Senior citizens"],
+    answer: "At-risk youth",
+  },
+  {
+    question: "In Common Goal, what is one reason Scott is drawn to Kip early on beyond attraction?",
+    options: ["Kip challenges him and doesn't care about his fame", "Kip is a lifelong fan of Scott's team", "Kip offers to manage Scott's finances", "Kip is Scott's neighbor"],
+    answer: "Kip challenges him and doesn't care about his fame",
+  },
+  {
+    question: "In Heated Rivalry, what personal detail does Shane try hard to keep separate from the media narrative?",
+    options: ["His sexuality and private relationships", "His college degree", "His charity work", "His dietary restrictions"],
+    answer: "His sexuality and private relationships",
+  },
+  {
+    question: "In Heated Rivalry, what is a notable trait of Ilya's public persona on the ice?",
+    options: ["He thrives on provoking opponents and getting under their skin", "He never trash-talks and avoids conflict", "He refuses to do interviews", "He always defers credit to teammates"],
+    answer: "He thrives on provoking opponents and getting under their skin",
+  },
+  {
+    question: "In Heated Rivalry, which city is most closely tied to Shane's home team?",
+    options: ["Montreal", "Los Angeles", "Dallas", "Columbus"],
+    answer: "Montreal",
+  },
+  {
+    question: "In Heated Rivalry, which city is most closely tied to Ilya's home team?",
+    options: ["Boston", "San Jose", "Edmonton", "Philadelphia"],
+    answer: "Boston",
+  },
+  {
+    question: "In Common Goal, what kind of public-facing activity creates extra pressure for Scott because of his discomfort with vulnerability?",
+    options: ["Giving speeches at charity events", "Doing skate sharpening for rookies", "Leading video review sessions", "Negotiating arena contracts"],
+    answer: "Giving speeches at charity events",
+  },
+  {
+    question: "In Heated Rivalry, what is the long-term pattern of Shane and Ilya's relationship for much of the book?",
+    options: ["Secret hookups that recur over years while they publicly act like enemies", "A public relationship from the beginning", "A brief fling that ends permanently after one night", "An arranged relationship for sponsorships"],
+    answer: "Secret hookups that recur over years while they publicly act like enemies",
+  },
+  {
+    question: "In Heated Rivalry, what is a major practical obstacle that keeps Shane and Ilya from being openly together for a long time?",
+    options: ["They play for rival teams and fear media fallout", "They live in different countries with visa issues", "One of them is already married", "They are related through a step-parent"],
+    answer: "They play for rival teams and fear media fallout",
+  },
+  {
+    question: "In Common Goal, what is one way Kip shows he has boundaries with Scott's celebrity status?",
+    options: ["He refuses to be treated like a secret and insists on respect", "He tries to get Scott to sign memorabilia for his friends", "He posts selfies with Scott online immediately", "He asks Scott to pull strings for him at work"],
+    answer: "He refuses to be treated like a secret and insists on respect",
+  },
+  {
+    question: "In Heated Rivalry, what is a recurring private dynamic between Shane and Ilya that contrasts their public hostility?",
+    options: ["Tenderness and emotional intimacy behind closed doors", "They only ever talk about hockey tactics", "They communicate solely through agents", "They avoid learning anything personal about each other"],
+    answer: "Tenderness and emotional intimacy behind closed doors",
+  },
+  {
+    question: "Across the series, which setting is repeatedly used for high-stakes, private conversations after games?",
+    options: ["Hotel rooms", "The equipment manager's office", "A hospital waiting room", "A TV studio set"],
+    answer: "Hotel rooms",
+  },
 ];
 
 export function pickRandomQuestion(): TriviaQuestion {
