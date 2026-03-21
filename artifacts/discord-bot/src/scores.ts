@@ -6,6 +6,9 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = join(__dirname, "..", "data");
 const SCORES_FILE = join(DATA_DIR, "scores.json");
 
+export const XP_CORRECT = 10;
+export const XP_CORRECT_WITH_HINT = 5;
+
 function ensureDataDir(): void {
   if (!existsSync(DATA_DIR)) {
     mkdirSync(DATA_DIR, { recursive: true });
@@ -22,18 +25,18 @@ export function loadScores(): Record<string, number> {
   }
 }
 
-export function incrementScore(userId: string): number {
+export function addXP(userId: string, amount: number): number {
   ensureDataDir();
   const scores = loadScores();
-  scores[userId] = (scores[userId] ?? 0) + 1;
+  scores[userId] = (scores[userId] ?? 0) + amount;
   writeFileSync(SCORES_FILE, JSON.stringify(scores, null, 2), "utf-8");
   return scores[userId]!;
 }
 
-export function getTopScores(limit = 10): Array<{ userId: string; score: number }> {
+export function getTopScores(limit = 10): Array<{ userId: string; xp: number }> {
   const scores = loadScores();
   return Object.entries(scores)
-    .map(([userId, score]) => ({ userId, score }))
-    .sort((a, b) => b.score - a.score)
+    .map(([userId, xp]) => ({ userId, xp }))
+    .sort((a, b) => b.xp - a.xp)
     .slice(0, limit);
 }

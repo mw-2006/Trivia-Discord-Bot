@@ -16,7 +16,7 @@ import cron from "node-cron";
 import OpenAI from "openai";
 import { triviaQuestions } from "./questions.js";
 import { loadCustomQuestions, saveCustomQuestion } from "./storage.js";
-import { incrementScore, getTopScores } from "./scores.js";
+import { addXP, getTopScores, XP_CORRECT, XP_CORRECT_WITH_HINT } from "./scores.js";
 
 const DISCORD_TOKEN = process.env["DISCORD_TOKEN"];
 const CHANNEL_ID = process.env["DISCORD_CHANNEL_ID"];
@@ -44,7 +44,7 @@ interface ActiveQuestion {
   options: string[];
   answered: Set<string>;
   hint: string | null; // null = not yet generated, string = cached
-  hintRequested: boolean;
+  hintUsers: Set<string>; // users who requested a hint (get reduced XP)
 }
 const activeQuestions = new Map<string, ActiveQuestion>();
 
@@ -127,7 +127,7 @@ async function postDailyTrivia(): Promise<void> {
     options,
     answered: new Set(),
     hint: hint ?? null,
-    hintRequested: false,
+    hintUsers: new Set(),
   });
 
   console.log(`[trivia] Question posted (message ${msg.id}).`);
@@ -136,19 +136,24 @@ async function postDailyTrivia(): Promise<void> {
 // --- Button handlers ---
 
 async function handleHintButton(interaction: ButtonInteraction, state: ActiveQuestion): Promise<void> {
+  // Track that this user used the hint (affects XP if they answer correctly)
+  state.hintUsers.add(interaction.user.id);
+
   // If no hint yet, generate and cache it
   if (state.hint === null) {
     await interaction.deferReply({ ephemeral: true });
-    state.hintRequested = true;
     try {
       state.hint = await generateHint(state.question, state.answer);
     } catch (err) {
       console.error("[hint] Failed to generate hint:", err);
       state.hint = "Think carefully about the characters and where key scenes take place!";
     }
-    await interaction.editReply(`💡 **Hint:** ${state.hint}`);
+    await interaction.editReply(`💡 **Hint:** ${state.hint}\n\n_Note: using a hint reduces your XP to **${XP_CORRECT_WITH_HINT} XP** if correct._`);
   } else {
-    await interaction.reply({ content: `💡 **Hint:** ${state.hint}`, ephemeral: true });
+    await interaction.reply({
+      content: `💡 **Hint:** ${state.hint}\n\n_Note: using a hint reduces your XP to **${XP_CORRECT_WITH_HINT} XP** if correct._`,
+      ephemeral: true,
+    });
   }
 }
 
@@ -169,9 +174,14 @@ async function handleAnswerButton(interaction: ButtonInteraction, state: ActiveQ
   const correctLabel = `${["A", "B", "C", "D"][correctIndex]}: ${state.answer}`;
 
   if (isCorrect) {
-    const newScore = incrementScore(interaction.user.id);
+    const usedHint = state.hintUsers.has(interaction.user.id);
+    const xpEarned = usedHint ? XP_CORRECT_WITH_HINT : XP_CORRECT;
+    const totalXP = addXP(interaction.user.id, xpEarned);
     await interaction.reply({
-      content: `✅ **Correct!** The answer was **${correctLabel}**.\nYour score: **${newScore}** correct ${newScore === 1 ? "answer" : "answers"}!`,
+      content: [
+        `✅ **Correct!** The answer was **${correctLabel}**.`,
+        `+**${xpEarned} XP**${usedHint ? " _(hint used)_" : ""} — Total: **${totalXP} XP**`,
+      ].join("\n"),
       ephemeral: true,
     });
   } else {
@@ -281,9 +291,9 @@ async function handleLeaderboard(interaction: ChatInputCommandInteraction): Prom
   }
 
   const medals = ["🥇", "🥈", "🥉"];
-  const rows = top.map(({ userId, score }, i) => {
+  const rows = top.map(({ userId, xp }, i) => {
     const medal = medals[i] ?? `**${i + 1}.**`;
-    return `${medal} <@${userId}> — **${score}** correct ${score === 1 ? "answer" : "answers"}`;
+    return `${medal} <@${userId}> — **${xp} XP**`;
   });
 
   await interaction.reply({ content: ["🏆 **Trivia Leaderboard**", "", ...rows].join("\n") });
