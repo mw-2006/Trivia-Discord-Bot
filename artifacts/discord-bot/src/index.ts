@@ -1,4 +1,7 @@
 import {
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
   Client,
   GatewayIntentBits,
   REST,
@@ -6,11 +9,13 @@ import {
   SlashCommandBuilder,
   PermissionFlagsBits,
   type ChatInputCommandInteraction,
+  type ButtonInteraction,
   type TextBasedChannel,
 } from "discord.js";
 import cron from "node-cron";
 import { triviaQuestions } from "./questions.js";
 import { loadCustomQuestions, saveCustomQuestion } from "./storage.js";
+import { incrementScore, getTopScores } from "./scores.js";
 
 const DISCORD_TOKEN = process.env["DISCORD_TOKEN"];
 const CHANNEL_ID = process.env["DISCORD_CHANNEL_ID"];
@@ -24,20 +29,34 @@ if (!ROLE_ID) throw new Error("Missing DISCORD_ROLE_ID secret.");
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
 const OPTION_LABELS = ["🇦", "🇧", "🇨", "🇩"];
+const OPTION_KEYS = ["a", "b", "c", "d"];
+
+// In-memory map of messageId -> active question state
+interface ActiveQuestion {
+  answer: string;
+  options: string[];
+  answered: Set<string>;
+}
+const activeQuestions = new Map<string, ActiveQuestion>();
 
 function pickRandomQuestion() {
   const all = [...triviaQuestions, ...loadCustomQuestions()];
   return all[Math.floor(Math.random() * all.length)]!;
 }
 
-function formatTriviaMessage(roleId: string): string {
-  const { question, options, answer } = pickRandomQuestion();
-  const answerIndex = options.indexOf(answer);
-  const answerLabel = OPTION_LABELS[answerIndex] ?? "?";
-  const optionLines = options
-    .map((opt, i) => `${OPTION_LABELS[i]} ${opt}`)
-    .join("\n");
+function buildTriviaComponents(options: string[]) {
+  const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    options.map((opt, i) =>
+      new ButtonBuilder()
+        .setCustomId(`trivia_${OPTION_KEYS[i]}`)
+        .setLabel(`${["A", "B", "C", "D"][i]}: ${opt}`)
+        .setStyle(ButtonStyle.Primary)
+    )
+  );
+  return [row];
+}
 
+function buildTriviaContent(roleId: string, question: string): string {
   return [
     `<@&${roleId}>`,
     "",
@@ -45,24 +64,75 @@ function formatTriviaMessage(roleId: string): string {
     "",
     `**${question}**`,
     "",
-    optionLines,
-    "",
-    `||✅ Answer: ${answerLabel} **${answer}**||`,
+    "_Click a button below to answer. Only your first answer counts!_",
   ].join("\n");
 }
 
 async function postDailyTrivia(): Promise<void> {
   console.log("[trivia] Picking question...");
+  const { question, options, answer } = pickRandomQuestion();
+
   const channel = await client.channels.fetch(CHANNEL_ID!);
   if (!channel || !channel.isTextBased()) {
     console.error("[trivia] Channel not found or not a text channel.");
     return;
   }
-  await (channel as TextBasedChannel).send(formatTriviaMessage(ROLE_ID!));
-  console.log("[trivia] Question posted successfully.");
+
+  const msg = await (channel as TextBasedChannel).send({
+    content: buildTriviaContent(ROLE_ID!, question),
+    components: buildTriviaComponents(options),
+  });
+
+  activeQuestions.set(msg.id, { answer, options, answered: new Set() });
+  console.log(`[trivia] Question posted (message ${msg.id}).`);
 }
 
-// Slash command definition
+// --- Button handler ---
+
+async function handleTriviaButton(interaction: ButtonInteraction): Promise<void> {
+  const state = activeQuestions.get(interaction.message.id);
+  if (!state) {
+    await interaction.reply({
+      content: "⚠️ This question is no longer active.",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  if (state.answered.has(interaction.user.id)) {
+    await interaction.reply({
+      content: "You've already answered this question!",
+      ephemeral: true,
+    });
+    return;
+  }
+
+  state.answered.add(interaction.user.id);
+
+  const pickedKey = interaction.customId.replace("trivia_", "");
+  const pickedIndex = OPTION_KEYS.indexOf(pickedKey);
+  const pickedOption = state.options[pickedIndex] ?? "";
+  const isCorrect = pickedOption === state.answer;
+
+  const correctIndex = state.options.indexOf(state.answer);
+  const correctLabel = `${["A", "B", "C", "D"][correctIndex]}: ${state.answer}`;
+
+  if (isCorrect) {
+    const newScore = incrementScore(interaction.user.id);
+    await interaction.reply({
+      content: `✅ **Correct!** The answer was **${correctLabel}**.\nYour score: **${newScore}** correct ${newScore === 1 ? "answer" : "answers"}!`,
+      ephemeral: true,
+    });
+  } else {
+    await interaction.reply({
+      content: `❌ **Wrong!** You picked **${["A", "B", "C", "D"][pickedIndex]}: ${pickedOption}**.\nThe correct answer was **${correctLabel}**.`,
+      ephemeral: true,
+    });
+  }
+}
+
+// --- Slash commands ---
+
 const addTriviaCommand = new SlashCommandBuilder()
   .setName("addtrivia")
   .setDescription("Add a new trivia question to the daily pool")
@@ -70,18 +140,10 @@ const addTriviaCommand = new SlashCommandBuilder()
   .addStringOption((o) =>
     o.setName("question").setDescription("The trivia question").setRequired(true)
   )
-  .addStringOption((o) =>
-    o.setName("a").setDescription("Option A").setRequired(true)
-  )
-  .addStringOption((o) =>
-    o.setName("b").setDescription("Option B").setRequired(true)
-  )
-  .addStringOption((o) =>
-    o.setName("c").setDescription("Option C").setRequired(true)
-  )
-  .addStringOption((o) =>
-    o.setName("d").setDescription("Option D").setRequired(true)
-  )
+  .addStringOption((o) => o.setName("a").setDescription("Option A").setRequired(true))
+  .addStringOption((o) => o.setName("b").setDescription("Option B").setRequired(true))
+  .addStringOption((o) => o.setName("c").setDescription("Option C").setRequired(true))
+  .addStringOption((o) => o.setName("d").setDescription("Option D").setRequired(true))
   .addStringOption((o) =>
     o
       .setName("answer")
@@ -95,17 +157,11 @@ const addTriviaCommand = new SlashCommandBuilder()
       )
   );
 
-async function registerCommands(clientId: string): Promise<void> {
-  const rest = new REST().setToken(DISCORD_TOKEN!);
-  await rest.put(Routes.applicationCommands(clientId), {
-    body: [addTriviaCommand.toJSON()],
-  });
-  console.log("[bot] Slash commands registered globally.");
-}
+const leaderboardCommand = new SlashCommandBuilder()
+  .setName("leaderboard")
+  .setDescription("Show the trivia leaderboard");
 
-async function handleAddTrivia(
-  interaction: ChatInputCommandInteraction
-): Promise<void> {
+async function handleAddTrivia(interaction: ChatInputCommandInteraction): Promise<void> {
   const question = interaction.options.getString("question", true);
   const optA = interaction.options.getString("a", true);
   const optB = interaction.options.getString("b", true);
@@ -116,10 +172,9 @@ async function handleAddTrivia(
   const options = [optA, optB, optC, optD];
   const answerMap: Record<string, string> = { a: optA, b: optB, c: optC, d: optD };
   const answer = answerMap[answerKey]!;
+  const label = `${["A", "B", "C", "D"][OPTION_KEYS.indexOf(answerKey)]}: ${answer}`;
 
   const total = saveCustomQuestion({ question, options, answer });
-
-  const label = OPTION_LABELS[["a", "b", "c", "d"].indexOf(answerKey)] ?? "?";
 
   await interaction.reply({
     content: [
@@ -127,7 +182,7 @@ async function handleAddTrivia(
       "",
       `**${question}**`,
       options.map((opt, i) => `${OPTION_LABELS[i]} ${opt}`).join("\n"),
-      `||✅ Answer: ${label} **${answer}**||`,
+      `Correct answer: **${label}**`,
       "",
       `📦 Total custom questions in pool: **${total}**`,
     ].join("\n"),
@@ -137,12 +192,57 @@ async function handleAddTrivia(
   console.log(`[trivia] New question added by ${interaction.user.tag}: "${question}"`);
 }
 
-client.on("interactionCreate", (interaction) => {
-  if (!interaction.isChatInputCommand()) return;
-  if (interaction.commandName === "addtrivia") {
-    handleAddTrivia(interaction).catch((err: unknown) => {
-      console.error("[bot] Error handling /addtrivia:", err);
+async function handleLeaderboard(interaction: ChatInputCommandInteraction): Promise<void> {
+  const top = getTopScores(10);
+
+  if (top.length === 0) {
+    await interaction.reply({
+      content: "📊 No scores yet — answer today's trivia question to get on the board!",
+      ephemeral: false,
     });
+    return;
+  }
+
+  const medals = ["🥇", "🥈", "🥉"];
+  const rows = top.map(({ userId, score }, i) => {
+    const medal = medals[i] ?? `**${i + 1}.**`;
+    return `${medal} <@${userId}> — **${score}** correct ${score === 1 ? "answer" : "answers"}`;
+  });
+
+  await interaction.reply({
+    content: ["🏆 **Trivia Leaderboard**", "", ...rows].join("\n"),
+    ephemeral: false,
+  });
+}
+
+async function registerCommands(clientId: string): Promise<void> {
+  const rest = new REST().setToken(DISCORD_TOKEN!);
+  await rest.put(Routes.applicationCommands(clientId), {
+    body: [addTriviaCommand.toJSON(), leaderboardCommand.toJSON()],
+  });
+  console.log("[bot] Slash commands registered globally.");
+}
+
+// --- Interaction router ---
+
+client.on("interactionCreate", (interaction) => {
+  if (interaction.isButton() && interaction.customId.startsWith("trivia_")) {
+    handleTriviaButton(interaction).catch((err: unknown) => {
+      console.error("[bot] Error handling button:", err);
+    });
+    return;
+  }
+
+  if (interaction.isChatInputCommand()) {
+    if (interaction.commandName === "addtrivia") {
+      handleAddTrivia(interaction).catch((err: unknown) => {
+        console.error("[bot] Error handling /addtrivia:", err);
+      });
+    } else if (interaction.commandName === "leaderboard") {
+      handleLeaderboard(interaction).catch((err: unknown) => {
+        console.error("[bot] Error handling /leaderboard:", err);
+      });
+    }
   }
 });
 
