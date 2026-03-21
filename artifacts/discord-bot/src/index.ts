@@ -161,6 +161,11 @@ const leaderboardCommand = new SlashCommandBuilder()
   .setName("leaderboard")
   .setDescription("Show the trivia leaderboard");
 
+const postTriviaCommand = new SlashCommandBuilder()
+  .setName("posttrivia")
+  .setDescription("Manually post a trivia question right now (staff only)")
+  .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild);
+
 async function handleAddTrivia(interaction: ChatInputCommandInteraction): Promise<void> {
   const question = interaction.options.getString("question", true);
   const optA = interaction.options.getString("a", true);
@@ -215,10 +220,16 @@ async function handleLeaderboard(interaction: ChatInputCommandInteraction): Prom
   });
 }
 
+async function handlePostTrivia(interaction: ChatInputCommandInteraction): Promise<void> {
+  await interaction.deferReply({ ephemeral: true });
+  await postDailyTrivia();
+  await interaction.editReply("✅ Trivia question posted!");
+}
+
 async function registerCommands(clientId: string): Promise<void> {
   const rest = new REST().setToken(DISCORD_TOKEN!);
   await rest.put(Routes.applicationCommands(clientId), {
-    body: [addTriviaCommand.toJSON(), leaderboardCommand.toJSON()],
+    body: [addTriviaCommand.toJSON(), leaderboardCommand.toJSON(), postTriviaCommand.toJSON()],
   });
   console.log("[bot] Slash commands registered globally.");
 }
@@ -241,6 +252,10 @@ client.on("interactionCreate", (interaction) => {
     } else if (interaction.commandName === "leaderboard") {
       handleLeaderboard(interaction).catch((err: unknown) => {
         console.error("[bot] Error handling /leaderboard:", err);
+      });
+    } else if (interaction.commandName === "posttrivia") {
+      handlePostTrivia(interaction).catch((err: unknown) => {
+        console.error("[bot] Error handling /posttrivia:", err);
       });
     }
   }
