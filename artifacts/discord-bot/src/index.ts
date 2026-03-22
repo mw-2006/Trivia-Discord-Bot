@@ -17,6 +17,14 @@ import OpenAI from "openai";
 import { triviaQuestions } from "./questions.js";
 import { loadCustomQuestions, saveCustomQuestion } from "./storage.js";
 import { addXP, getTopScores, XP_CORRECT, XP_CORRECT_WITH_HINT } from "./scores.js";
+import {
+  DEFAULT_THEME,
+  loadGuildConfigs,
+  saveGuildConfig,
+  getGuildConfig,
+  type GuildConfig,
+} from "./guild-config.js";
+import { getThemeQuestion } from "./theme-questions.js";
 
 const DISCORD_TOKEN = process.env["DISCORD_TOKEN"];
 const CHANNEL_ID = process.env["DISCORD_CHANNEL_ID"];
@@ -43,27 +51,32 @@ interface ActiveQuestion {
   answer: string;
   options: string[];
   answered: Set<string>;
-  hint: string | null; // null = not yet generated, string = cached
-  hintUsers: Set<string>; // users who requested a hint (get reduced XP)
+  hint: string | null;
+  hintUsers: Set<string>;
+  theme: string;
 }
 const activeQuestions = new Map<string, ActiveQuestion>();
 
 // --- Helpers ---
 
-function pickRandomQuestion() {
+function pickDefaultQuestion() {
   const all = [...triviaQuestions, ...loadCustomQuestions()];
   return all[Math.floor(Math.random() * all.length)]!;
 }
 
-async function generateHint(question: string, answer: string): Promise<string> {
+async function pickQuestion(theme: string) {
+  if (theme === DEFAULT_THEME) return pickDefaultQuestion();
+  return getThemeQuestion(theme, openai);
+}
+
+async function generateHint(question: string, answer: string, theme: string): Promise<string> {
   const response = await openai.chat.completions.create({
     model: "gpt-5.2",
     max_completion_tokens: 100,
     messages: [
       {
         role: "system",
-        content:
-          "You write short, helpful hints for trivia questions about the Ice Planet Hockey book series (Heated Rivalry / Common Goal by Rachel Reid). The hint should nudge the player in the right direction without revealing the answer directly. Keep it to 1–2 sentences.",
+        content: `You write short, helpful hints for trivia questions about: ${theme}. The hint should nudge the player in the right direction without revealing the answer directly. Keep it to 1–2 sentences.`,
       },
       {
         role: "user",
@@ -71,7 +84,10 @@ async function generateHint(question: string, answer: string): Promise<string> {
       },
     ],
   });
-  return response.choices[0]?.message?.content?.trim() ?? "Think carefully about the characters and where key scenes take place!";
+  return (
+    response.choices[0]?.message?.content?.trim() ??
+    "Think carefully about the topic and what you know!"
+  );
 }
 
 function buildTriviaComponents(options: string[]) {
@@ -106,18 +122,20 @@ function buildTriviaContent(roleId: string, question: string): string {
   ].join("\n");
 }
 
-async function postDailyTrivia(): Promise<void> {
-  console.log("[trivia] Picking question...");
-  const { question, options, answer, hint } = pickRandomQuestion();
+async function postDailyTrivia(config: GuildConfig): Promise<void> {
+  const { channelId, roleId, theme } = config;
+  console.log(`[trivia] Picking question for theme: "${theme}"...`);
 
-  const channel = await client.channels.fetch(CHANNEL_ID!);
+  const { question, options, answer, hint } = await pickQuestion(theme);
+
+  const channel = await client.channels.fetch(channelId);
   if (!channel || !channel.isTextBased()) {
-    console.error("[trivia] Channel not found or not a text channel.");
+    console.error(`[trivia] Channel ${channelId} not found or not a text channel.`);
     return;
   }
 
   const msg = await (channel as TextBasedChannel).send({
-    content: buildTriviaContent(ROLE_ID!, question),
+    content: buildTriviaContent(roleId, question),
     components: buildTriviaComponents(options),
   });
 
@@ -128,6 +146,7 @@ async function postDailyTrivia(): Promise<void> {
     answered: new Set(),
     hint: hint ?? null,
     hintUsers: new Set(),
+    theme,
   });
 
   console.log(`[trivia] Question posted (message ${msg.id}).`);
@@ -136,19 +155,19 @@ async function postDailyTrivia(): Promise<void> {
 // --- Button handlers ---
 
 async function handleHintButton(interaction: ButtonInteraction, state: ActiveQuestion): Promise<void> {
-  // Track that this user used the hint (affects XP if they answer correctly)
   state.hintUsers.add(interaction.user.id);
 
-  // If no hint yet, generate and cache it
   if (state.hint === null) {
     await interaction.deferReply({ ephemeral: true });
     try {
-      state.hint = await generateHint(state.question, state.answer);
+      state.hint = await generateHint(state.question, state.answer, state.theme);
     } catch (err) {
       console.error("[hint] Failed to generate hint:", err);
-      state.hint = "Think carefully about the characters and where key scenes take place!";
+      state.hint = "Think carefully about the topic and what you know!";
     }
-    await interaction.editReply(`💡 **Hint:** ${state.hint}\n\n_Note: using a hint reduces your XP to **${XP_CORRECT_WITH_HINT} XP** if correct._`);
+    await interaction.editReply(
+      `💡 **Hint:** ${state.hint}\n\n_Note: using a hint reduces your XP to **${XP_CORRECT_WITH_HINT} XP** if correct._`
+    );
   } else {
     await interaction.reply({
       content: `💡 **Hint:** ${state.hint}\n\n_Note: using a hint reduces your XP to **${XP_CORRECT_WITH_HINT} XP** if correct._`,
@@ -247,6 +266,32 @@ const postTriviaCommand = new SlashCommandBuilder()
   .setDescription("Manually post a trivia question right now (staff only)")
   .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild);
 
+const setThemeCommand = new SlashCommandBuilder()
+  .setName("settheme")
+  .setDescription("Set the trivia topic for this server (staff only)")
+  .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+  .addStringOption((o) =>
+    o
+      .setName("theme")
+      .setDescription(
+        'Describe the trivia topic, e.g. "Taylor Swift discography" or "Marvel Cinematic Universe"'
+      )
+      .setRequired(true)
+  );
+
+const setupCommand = new SlashCommandBuilder()
+  .setName("setup")
+  .setDescription("Set up the trivia bot for this server (staff only)")
+  .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+  .addStringOption((o) =>
+    o.setName("channel_id").setDescription("Channel ID to post trivia in").setRequired(true)
+  )
+  .addStringOption((o) =>
+    o.setName("role_id").setDescription("Role ID to ping for trivia").setRequired(true)
+  );
+
+// --- Command handlers ---
+
 async function handleAddTrivia(interaction: ChatInputCommandInteraction): Promise<void> {
   const question = interaction.options.getString("question", true);
   const optA = interaction.options.getString("a", true);
@@ -301,14 +346,85 @@ async function handleLeaderboard(interaction: ChatInputCommandInteraction): Prom
 
 async function handlePostTrivia(interaction: ChatInputCommandInteraction): Promise<void> {
   await interaction.deferReply({ ephemeral: true });
-  await postDailyTrivia();
+  const guildId = interaction.guildId;
+  const guildConfig = guildId ? getGuildConfig(guildId) : null;
+  const config: GuildConfig = guildConfig ?? {
+    channelId: CHANNEL_ID!,
+    roleId: ROLE_ID!,
+    theme: DEFAULT_THEME,
+  };
+  await postDailyTrivia(config);
   await interaction.editReply("✅ Trivia question posted!");
+}
+
+async function handleSetTheme(interaction: ChatInputCommandInteraction): Promise<void> {
+  const theme = interaction.options.getString("theme", true).trim();
+  const guildId = interaction.guildId;
+
+  if (!guildId) {
+    await interaction.reply({ content: "❌ This command must be used in a server.", ephemeral: true });
+    return;
+  }
+
+  saveGuildConfig(guildId, { theme });
+
+  await interaction.reply({
+    content: [
+      `✅ **Trivia theme updated!**`,
+      ``,
+      `This server's trivia topic is now: **${theme}**`,
+      ``,
+      `Questions will be AI-generated for this topic. Use \`/posttrivia\` to test it right away!`,
+    ].join("\n"),
+    ephemeral: true,
+  });
+
+  console.log(`[config] Guild ${guildId} set theme: "${theme}"`);
+}
+
+async function handleSetup(interaction: ChatInputCommandInteraction): Promise<void> {
+  const channelId = interaction.options.getString("channel_id", true).trim();
+  const roleId = interaction.options.getString("role_id", true).trim();
+  const guildId = interaction.guildId;
+
+  if (!guildId) {
+    await interaction.reply({ content: "❌ This command must be used in a server.", ephemeral: true });
+    return;
+  }
+
+  const existing = getGuildConfig(guildId);
+  saveGuildConfig(guildId, {
+    channelId,
+    roleId,
+    theme: existing?.theme ?? DEFAULT_THEME,
+  });
+
+  await interaction.reply({
+    content: [
+      `✅ **Bot configured for this server!**`,
+      ``,
+      `📢 Trivia channel: <#${channelId}>`,
+      `🔔 Ping role: <@&${roleId}>`,
+      `🎯 Theme: **${existing?.theme ?? DEFAULT_THEME}**`,
+      ``,
+      `Use \`/settheme\` to change the trivia topic. Use \`/posttrivia\` to post a question now!`,
+    ].join("\n"),
+    ephemeral: true,
+  });
+
+  console.log(`[config] Guild ${guildId} set up with channel ${channelId} and role ${roleId}`);
 }
 
 async function registerCommands(clientId: string): Promise<void> {
   const rest = new REST().setToken(DISCORD_TOKEN!);
   await rest.put(Routes.applicationCommands(clientId), {
-    body: [addTriviaCommand.toJSON(), leaderboardCommand.toJSON(), postTriviaCommand.toJSON()],
+    body: [
+      addTriviaCommand.toJSON(),
+      leaderboardCommand.toJSON(),
+      postTriviaCommand.toJSON(),
+      setThemeCommand.toJSON(),
+      setupCommand.toJSON(),
+    ],
   });
   console.log("[bot] Slash commands registered globally.");
 }
@@ -324,34 +440,61 @@ client.on("interactionCreate", (interaction) => {
   }
 
   if (interaction.isChatInputCommand()) {
-    if (interaction.commandName === "addtrivia") {
-      handleAddTrivia(interaction).catch((err: unknown) => {
-        console.error("[bot] Error handling /addtrivia:", err);
-      });
-    } else if (interaction.commandName === "leaderboard") {
-      handleLeaderboard(interaction).catch((err: unknown) => {
-        console.error("[bot] Error handling /leaderboard:", err);
-      });
-    } else if (interaction.commandName === "posttrivia") {
-      handlePostTrivia(interaction).catch((err: unknown) => {
-        console.error("[bot] Error handling /posttrivia:", err);
+    const handlers: Record<string, (i: ChatInputCommandInteraction) => Promise<void>> = {
+      addtrivia: handleAddTrivia,
+      leaderboard: handleLeaderboard,
+      posttrivia: handlePostTrivia,
+      settheme: handleSetTheme,
+      setup: handleSetup,
+    };
+
+    const handler = handlers[interaction.commandName];
+    if (handler) {
+      handler(interaction).catch((err: unknown) => {
+        console.error(`[bot] Error handling /${interaction.commandName}:`, err);
       });
     }
   }
 });
 
-client.once("clientReady", () => {
+client.once("clientReady", async () => {
   console.log(`[bot] Logged in as ${client.user?.tag}`);
 
   registerCommands(client.user!.id).catch((err: unknown) => {
     console.error("[bot] Failed to register slash commands:", err);
   });
 
+  // Resolve the home guild ID from the env-var channel
+  let homeGuildId: string | null = null;
+  try {
+    const homeChannel = await client.channels.fetch(CHANNEL_ID!);
+    if (homeChannel && "guildId" in homeChannel) {
+      homeGuildId = (homeChannel as { guildId: string }).guildId;
+    }
+  } catch {
+    console.warn("[bot] Could not resolve home guild from DISCORD_CHANNEL_ID.");
+  }
+
   console.log(`[bot] Scheduling trivia with cron: ${CRON_SCHEDULE}`);
-  cron.schedule(CRON_SCHEDULE, () => {
-    postDailyTrivia().catch((err: unknown) => {
-      console.error("[trivia] Failed to post:", err);
-    });
+  cron.schedule(CRON_SCHEDULE, async () => {
+    // Home server always uses env-var channel/role, theme from guild config or default
+    const homeTheme = homeGuildId
+      ? (getGuildConfig(homeGuildId)?.theme ?? DEFAULT_THEME)
+      : DEFAULT_THEME;
+
+    await postDailyTrivia({ channelId: CHANNEL_ID!, roleId: ROLE_ID!, theme: homeTheme }).catch(
+      (err: unknown) => console.error("[trivia] Home guild post failed:", err)
+    );
+
+    // All other guilds that have been set up via /setup
+    const configs = loadGuildConfigs();
+    for (const [guildId, config] of Object.entries(configs)) {
+      if (guildId === homeGuildId) continue; // already handled above
+      if (!config.channelId || !config.roleId) continue;
+      await postDailyTrivia(config).catch((err: unknown) =>
+        console.error(`[trivia] Guild ${guildId} post failed:`, err)
+      );
+    }
   });
 
   const customCount = loadCustomQuestions().length;
