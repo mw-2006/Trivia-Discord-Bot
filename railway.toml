@@ -1,0 +1,6 @@
+[build]
+buildCommand = "pnpm install"
+
+[deploy]
+startCommand = "pnpm --filter @workspace/discord-bot run dev"
+restartPolicyType = "always"
